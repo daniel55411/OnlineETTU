@@ -156,11 +156,6 @@ class MapWidget(QWidget):
             tile.map_y += self.delta.y()
             self.draw_tile(painter, tile, tile.map_x, tile.map_y)
         self.remove_outside_tiles()
-        # self.draw_on_bound(painter, RightBound())
-        # self.draw_on_bound(painter, TopBound())
-        # self.draw_on_bound(painter, LeftBound())
-        # self.draw_on_bound(painter, BottomBound())
-        # self.draw_tiles(painter)
         self.draw_empty_tile(painter)
 
     def remove_outside_tiles(self):
@@ -199,23 +194,6 @@ class MapWidget(QWidget):
                 return tile
         return None
 
-    def draw_on_bound(self, painter: "QPainter", bound: "Bound"):
-        sequence = list(self.get_tiles_in_geometry())
-        if len(sequence) == 0:
-            return
-        bound_tile = bound.minmax(sequence)
-        painter.setBrush(QColor(255, 0, 0))
-        painter.drawRect(bound_tile.map_x, bound_tile.map_y, self.tile_size, self.tile_size)
-        painter.drawText(QPoint(bound_tile.map_x + 10, bound_tile.map_y + 10), str(bound))
-        bound.set_tile(bound_tile)
-        if bound.tile_in_bound(self.geometry()):
-            for index, line in enumerate(bound.range(self.geometry())):
-                index_row, index_column = bound.get_index_cell(index)
-                row, column = bound.get_cell(line)
-                tile = osm.Tile(index_row, index_column, self.zoom)
-                self.draw_tile(painter, tile, row, column)
-                self.add_tile(tile, row, column)
-
     def draw_empty_tile(self, painter: "QPainter"):
         rect = QRect(self.geometry().x() - self.tile_size,
                      self.geometry().y() - self.tile_size,
@@ -243,8 +221,3 @@ class MapWidget(QWidget):
                     if n_tile not in visited:
                         quque.append(n_tile)
                         visited.add(n_tile)
-
-    def get_tiles_in_geometry(self):
-        for tile in self.drawn_tiles:
-            if self.geometry().contains(QRect(tile.map_x, tile.map_y, self.tile_size, self.tile_size)):
-                yield tile
