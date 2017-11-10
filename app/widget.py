@@ -1,12 +1,15 @@
+from _mysql import connect
+
 from PyQt5.QtWidgets import QMainWindow, QWidget, QCheckBox, \
     QDockWidget, QVBoxLayout, QGridLayout, \
     QLabel, QPushButton, QHBoxLayout
-from PyQt5.QtCore import Qt, QRect, QPointF, QRectF, QPoint
+from PyQt5.QtCore import Qt, QRect, QPoint, \
+    QThread, QObject, pyqtSignal, \
+    pyqtSlot, QThreadPool, QRunnable, \
+    QTimer
 from PyQt5.QtGui import QPainter, QPixmap, QColor
 from app import ettu, openStreetMap as osm
 from collections import deque
-
-from app.classes import *
 
 
 class QTile(osm.Tile):
@@ -20,11 +23,37 @@ class QTile(osm.Tile):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.map = MapWidget()
         self.initUI()
         # self.createDockWidget()
 
     def initUI(self):
-        self.setCentralWidget(MapWidget())
+        widget = QWidget(self)
+        self.button1 = QPushButton('-')
+        self.button1.clicked.connect(self.dec_zoom)
+        self.button2 = QPushButton('+')
+        self.button2.clicked.connect(self.inc_zoom)
+        self.button3 = QPushButton('Update')
+        self.button3.clicked.connect(self.map.update)
+        layout = QVBoxLayout(widget)
+        layout.addWidget(self.button1)
+        layout.addWidget(self.button2)
+        layout.addWidget(self.button3)
+        layout.addWidget(self.map)
+        widget.setLayout(layout)
+        self.setCentralWidget(widget)
+
+        # self.setCentralWidget(self.map)
+
+    def inc_zoom(self):
+        if self.map.zoom < 18:
+            self.map.zoom += 1
+            self.map.update()
+
+    def dec_zoom(self):
+        if self.map.zoom > 0:
+            self.map.zoom -= 1
+            self.map.update()
 
     def createDockWidget(self):
         self.docked = QDockWidget("Dockable", self)
@@ -75,29 +104,59 @@ class MapWidget(QWidget):
         self.tile_size = 256
         self.latitude = 56.86738408969649
         self.longitude = 60.532554388046265
-        self.zoom = 15
+        self.zoom = 14
         self.redraw_flag = False
         self.drawn_tiles = []
         self.chosen_trams = list(self.ettu.get_trams())
-        self.chosen_trolleybuses = []
+        self.chosen_trolleybuses = list(self.ettu.get_trolleybuses())
         self.delta = QPoint(0, 0)
         self.drag_start = None
         self.current_pos = None
+        self.thread_pool = QThreadPool()
+        self.queue = deque()
+        self.flag_draw_tile = False
+
+    def init_timer(self):
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update)
+        self.timer.start(1000)
 
     def paintEvent(self, event):
         painter = QPainter()
+        # self.chosen_trams = list(self.ettu.get_trams())
+        # self.chosen_trolleybuses = list(self.ettu.get_trolleybuses())
         painter.begin(self)
         if self.redraw_flag:
             self.redraw_tiles(painter)
         else:
+            self.drawn_tiles.clear()
             self.draw_tiles(painter)
         self.draw_transports(painter)
         self.redraw_flag = False
         painter.end()
 
+    @pyqtSlot(QPainter, osm.Tile, QRect, QRect)
+    def _draw_tile(self, painter: "QPainter", tile: "osm.Tile", target: "QRect", source: "QRect"):
+        self.flag_draw_tile = True
+        self.queue.append(QTile(tile, map_x=target.x(), map_y=target.y()))
+        self.update()
+        self.flag_draw_tile = False
+
+    def _draw_tile_(self, painter: "QPainter", tile: "osm.Tile", row: int, column: int):
+        target = QRect(row, column, self.tile_size, self.tile_size)
+        source = QRect(0, 0, self.tile_size, self.tile_size)
+        painter.drawPixmap(target, QPixmap(self.cache.get_tile(tile)), source)
+
     def draw_tile(self, painter: "QPainter", tile: "osm.Tile", row: int, column: int):
         target = QRect(row, column, self.tile_size, self.tile_size)
         source = QRect(0, 0, self.tile_size, self.tile_size)
+
+        # region
+        # worker = Worker(self.cache, painter, tile, target, source)
+        # worker.signal.finish.connect(self._draw_tile)
+        # self.thread_pool.start(worker)
+        # end region
+
         painter.drawPixmap(target, QPixmap(self.cache.get_tile(tile)), source)
 
     def draw_tiles(self, painter: "QPainter"):
@@ -137,7 +196,7 @@ class MapWidget(QWidget):
         tile = self.find_drawn_tile(x, y)
         if tile is None:
             return
-        latitude, longitude = osm.Translator.num2deg(tile.x, tile.y, tile.zoom)
+        latitude, longitude = osm.Translator.num2deg(tile.x, tile.y, self.zoom)
         dy = osm.Translator.get_distance((latitude, longitude), (transport.latitude, longitude))
         dx = osm.Translator.get_distance((latitude, longitude), (latitude, transport.longitude))
         resolution = osm.Translator.get_resolution(transport.latitude, self.zoom)
@@ -202,10 +261,10 @@ class MapWidget(QWidget):
         tile = self.drawn_tiles[0]
         visited = set()
         visited.add(tile)
-        quque = deque()
-        quque.append(tile)
-        while len(quque) != 0:
-            tile = quque.popleft()
+        queue = deque()
+        queue.append(tile)
+        while len(queue) != 0:
+            tile = queue.popleft()
             if not rect.contains(QPoint(tile.map_x, tile.map_y)):
                 continue
             if tile not in self.drawn_tiles:
@@ -215,9 +274,34 @@ class MapWidget(QWidget):
                 for y in range(-1, 2):
                     if x == 0 and y == 0:
                         continue
-                    n_tile = QTile(osm.Tile(tile.x + x, tile.y + y, tile.zoom),
+                    n_tile = QTile(osm.Tile(tile.x + x, tile.y + y, self.zoom),
                                    tile.map_x + x * self.tile_size,
                                    tile.map_y + y * self.tile_size)
                     if n_tile not in visited:
-                        quque.append(n_tile)
+                        queue.append(n_tile)
                         visited.add(n_tile)
+
+
+class Worker(QRunnable):
+    def __init__(self, cache: "osm.Cache",
+                 painter: "QPainter",
+                 tile: "osm.Tile",
+                 target: QRect,
+                 source: QRect):
+        super().__init__()
+        self.tile = tile
+        self.cache = cache
+        self.painter = painter
+        self.target = target
+        self.source = source
+        self.signal = Signal()
+
+    @pyqtSlot()
+    def run(self):
+        self.cache.get_tile(self.tile)
+        self.signal.finish.emit(self.painter, self.tile, self.target, self.source)
+        self.setAutoDelete(True)
+
+
+class Signal(QObject):
+    finish = pyqtSignal(QPainter, osm.Tile, QRect, QRect)
