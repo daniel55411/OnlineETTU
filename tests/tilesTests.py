@@ -1,6 +1,7 @@
 import unittest
+
+from app.PyQTExt.widget import QTile
 from app.openStreetMap import Tile
-from app.widget import QTile
 
 
 class TileTests(unittest.TestCase):

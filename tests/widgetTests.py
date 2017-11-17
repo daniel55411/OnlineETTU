@@ -1,5 +1,6 @@
 import unittest
-from app.widget import MapWidget, QTile
+
+from app.PyQTExt.widget import MapWidget, QTile
 from app.openStreetMap import Tile
 
 

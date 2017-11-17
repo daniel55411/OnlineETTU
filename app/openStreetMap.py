@@ -2,6 +2,7 @@ import math
 import os.path
 import requests
 from app.exceptions.OSMExceptions import *
+from threading import Lock
 
 
 def map2str(f):
@@ -56,6 +57,7 @@ class Cache:
         if not self.exist():
             os.makedirs(self.cache_dir)
         self.receiver = Receiver()
+        self.lock = Lock()
 
     @map2str
     def exist(self, paths=[]):
@@ -67,9 +69,10 @@ class Cache:
 
     @map2str
     def create_subfolder(self, paths=[]):
-        for index in range(1, len(paths) + 1):
-            if not self.exist(paths[:index]):
-                os.makedirs(os.path.join(self.cache_dir, *paths[:index]))
+        with self.lock:
+            for index in range(1, len(paths) + 1):
+                if not self.exist(paths[:index]):
+                    os.makedirs(os.path.join(self.cache_dir, *paths[:index]))
 
     def save(self, stream, tile: "Tile"):
         paths = [tile.zoom, tile.x]

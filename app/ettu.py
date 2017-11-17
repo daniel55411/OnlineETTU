@@ -16,6 +16,7 @@ class Receiver:
         TransportType.TROLLEYBUS: 'tl'
     }
     route_re_pattern = r'/pass/routes/{}(?P<route>\d+)/'
+    stations = 'http://map.ettu.ru/api/v2/{}/points/?apiKey=111'
 
     def __init__(self):
         self.trams = self.get_all_routes(TransportType.TRAM)

@@ -1,23 +1,20 @@
 from _mysql import connect
 
-from PyQt5.QtWidgets import QMainWindow, QWidget, QCheckBox, \
-    QDockWidget, QVBoxLayout, QGridLayout, \
-    QLabel, QPushButton, QHBoxLayout
-from PyQt5.QtCore import Qt, QRect, QPoint, \
-    QThread, QObject, pyqtSignal, \
-    pyqtSlot, QThreadPool, QRunnable, \
-    QTimer
-from PyQt5.QtGui import QPainter, QPixmap, QColor
+from PyQt5.QtWidgets import (QMainWindow, QWidget, QCheckBox,
+                             QDockWidget, QVBoxLayout, QGridLayout,
+                             QLabel, QPushButton, QHBoxLayout,
+                             QGraphicsPixmapItem, QGraphicsView,
+                             QGraphicsScene)
+
+from PyQt5.QtCore import (Qt, QRect, QPoint, QRectF,
+                          QThread, QObject, pyqtSignal,
+                          pyqtSlot, QThreadPool, QRunnable,
+                          QTimer)
+from PyQt5.QtGui import QPainter, QPixmap, QColor, QBrush
 from app import ettu, openStreetMap as osm
 from collections import deque
-
-
-class QTile(osm.Tile):
-    def __init__(self, tile: "osm.Tile", map_x=0, map_y=0):
-        super().__init__(tile.x, tile.y, tile.zoom)
-        self.map_x = map_x
-        self.map_y = map_y
-        self.corner = None
+from app.PyQTExt.pixmapItems import *
+from app.PyQTExt.workers import *
 
 
 class MainWindow(QMainWindow):
@@ -34,7 +31,7 @@ class MainWindow(QMainWindow):
         self.button2 = QPushButton('+')
         self.button2.clicked.connect(self.inc_zoom)
         self.button3 = QPushButton('Update')
-        self.button3.clicked.connect(self.map.update)
+        self.button3.clicked.connect(self.map.refresh)
         layout = QVBoxLayout(widget)
         layout.addWidget(self.button1)
         layout.addWidget(self.button2)
@@ -48,12 +45,12 @@ class MainWindow(QMainWindow):
     def inc_zoom(self):
         if self.map.zoom < 18:
             self.map.zoom += 1
-            self.map.update()
+            self.map.refresh()
 
     def dec_zoom(self):
         if self.map.zoom > 0:
             self.map.zoom -= 1
-            self.map.update()
+            self.map.refresh()
 
     def createDockWidget(self):
         self.docked = QDockWidget("Dockable", self)
@@ -91,7 +88,7 @@ class ChooseRoutesWidget(QWidget):
         self.setLayout(self.layout)
 
 
-class MapWidget(QWidget):
+class MapWidget(QGraphicsView):
     transport_type_color = {
         ettu.TransportType.TRAM: QColor(255, 0, 0),
         ettu.TransportType.TROLLEYBUS: QColor(0, 0, 255)
@@ -113,83 +110,78 @@ class MapWidget(QWidget):
         self.drag_start = None
         self.current_pos = None
         self.thread_pool = QThreadPool()
-        self.queue = deque()
-        self.flag_draw_tile = False
+        self.paint_task = []
+        self.init_scene()
+
+    def init_scene(self):
+        self.scene = QGraphicsScene(self.tile_size,
+                                    self.tile_size,
+                                    self.geometry().width(),
+                                    self.geometry().height(),
+                                    self)
+        self.setScene(self.scene)
+        self.refresh()
 
     def init_timer(self):
         self.timer = QTimer()
-        self.timer.timeout.connect(self.update)
-        self.timer.start(1000)
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(100)
 
-    def paintEvent(self, event):
-        painter = QPainter()
+    def refresh(self):
         # self.chosen_trams = list(self.ettu.get_trams())
         # self.chosen_trolleybuses = list(self.ettu.get_trolleybuses())
-        painter.begin(self)
         if self.redraw_flag:
-            self.redraw_tiles(painter)
+            self.redraw_tiles()
         else:
             self.drawn_tiles.clear()
-            self.draw_tiles(painter)
-        self.draw_transports(painter)
+            self.scene.clear()
+            self.draw_tiles()
         self.redraw_flag = False
-        painter.end()
-
-    @pyqtSlot(QPainter, osm.Tile, QRect, QRect)
-    def _draw_tile(self, painter: "QPainter", tile: "osm.Tile", target: "QRect", source: "QRect"):
-        self.flag_draw_tile = True
-        self.queue.append(QTile(tile, map_x=target.x(), map_y=target.y()))
+        self.draw_transports()
         self.update()
-        self.flag_draw_tile = False
 
-    def _draw_tile_(self, painter: "QPainter", tile: "osm.Tile", row: int, column: int):
-        target = QRect(row, column, self.tile_size, self.tile_size)
-        source = QRect(0, 0, self.tile_size, self.tile_size)
-        painter.drawPixmap(target, QPixmap(self.cache.get_tile(tile)), source)
+    @pyqtSlot(object)
+    def _draw_tile(self, tile: "QTile"):
+        if tile.zoom == self.zoom:
+            tile.setPixmap(QPixmap(self.cache.get_tile(tile)))
+            tile.setZValue(-1)
+            self.scene.addItem(tile)
 
-    def draw_tile(self, painter: "QPainter", tile: "osm.Tile", row: int, column: int):
-        target = QRect(row, column, self.tile_size, self.tile_size)
-        source = QRect(0, 0, self.tile_size, self.tile_size)
+    def draw_tile(self, tile: "QTile"):
+        worker = TileWorker(self.cache, tile)
+        worker.signal.finish.connect(self._draw_tile)
+        self.thread_pool.start(worker)
 
-        # region
-        # worker = Worker(self.cache, painter, tile, target, source)
-        # worker.signal.finish.connect(self._draw_tile)
-        # self.thread_pool.start(worker)
-        # end region
-
-        painter.drawPixmap(target, QPixmap(self.cache.get_tile(tile)), source)
-
-    def draw_tiles(self, painter: "QPainter"):
+    def draw_tiles(self):
         x, y = osm.Translator.deg2num(self.latitude, self.longitude, self.zoom)
-        for column_index, column in enumerate(range(self.geometry().left(),
-                                                    self.geometry().right() + self.tile_size + 1,
+        for column_index, column in enumerate(range(self.geometry().left() - 2*self.tile_size,
+                                                    self.geometry().right() + 2*self.tile_size,
                                                     self.tile_size)):
-            for row_index, row in enumerate(range(self.geometry().top(),
-                                                  self.geometry().bottom() + self.tile_size + 1,
+            for row_index, row in enumerate(range(self.geometry().top() - 2*self.tile_size,
+                                                  self.geometry().bottom() + 2*self.tile_size,
                                                   self.tile_size)):
-                tile = osm.Tile(x + column_index, y + row_index, self.zoom)
-                self.draw_tile(painter, tile, column, row)
-                self.add_tile(tile, column, row)
+                tile = QTile(
+                    osm.Tile(x + column_index, y + row_index, self.zoom), column, row)
+                self.draw_tile(tile)
+                self.add_tile(tile)
 
-    def add_tile(self, tile: "osm.Tile", x: int, y: int):
-        qtile = QTile(tile)
-        qtile.map_x = x
-        qtile.map_y = y
-        self.drawn_tiles.append(qtile)
+    def add_tile(self, tile: "QTile"):
+        self.drawn_tiles.append(tile)
 
-    def draw_transport(self, painter: "QPainter",
+    def draw_transport(self,
                        x: int,
                        y: int,
                        transport: "ettu.Transport"):
-        painter.setBrush(self.transport_type_color[transport.transport_type])
-        painter.drawEllipse(x, y, 10, 10)
-        painter.drawText(x, y, transport.route_id)
+        self.scene.addEllipse(x, y, 10, 10,
+                              brush=QBrush(QColor(self.transport_type_color[transport.transport_type])))
+        item = self.scene.addText(transport.route_id)
+        item.setPos(x, y)
 
-    def draw_transports(self, painter: "QPainter"):
+    def draw_transports(self):
         for tr in self.chosen_trams + self.chosen_trolleybuses:
             coordinates = self.get_widget_coordinates(tr)
             if coordinates is not None and self.geometry().contains(QPoint(*coordinates)):
-                self.draw_transport(painter, *coordinates, tr)
+                self.draw_transport(*coordinates, tr)
 
     def get_widget_coordinates(self, transport: "ettu.Transport"):
         x, y = osm.Translator.deg2num(transport.latitude, transport.longitude, self.zoom)
@@ -209,16 +201,18 @@ class MapWidget(QWidget):
                 return tile
         return None
 
-    def redraw_tiles(self, painter: "QPainter"):
+    def redraw_tiles(self):
         for tile in self.drawn_tiles:
-            tile.map_x += self.delta.x()
-            tile.map_y += self.delta.y()
-            self.draw_tile(painter, tile, tile.map_x, tile.map_y)
+            tile.shift(self.delta)
         self.remove_outside_tiles()
-        self.draw_empty_tile(painter)
+        self.draw_empty_tile()
 
     def remove_outside_tiles(self):
-        bounds = QRect(0, 0, self.geometry().width() + self.tile_size, self.geometry().height() + self.tile_size)
+        bounds = QRect(self.geometry().x() - self.tile_size,
+                       self.geometry().y() - self.tile_size,
+                       self.geometry().width() + self.tile_size,
+                       self.geometry().height() + self.tile_size)
+        bounds = self.geometry()
         bad_tiles = []
         for tile in self.drawn_tiles:
             if not bounds.intersects(QRect(tile.map_x, tile.map_y, self.tile_size, self.tile_size)):
@@ -244,7 +238,7 @@ class MapWidget(QWidget):
         self.drag_start = self.current_pos
         self.delta = delta
         self.redraw_flag = True
-        self.update()
+        self.refresh()
 
     def find_tile_by_map_coordinates(self, x: int, y: int):
         for tile in self.drawn_tiles:
@@ -253,11 +247,11 @@ class MapWidget(QWidget):
                 return tile
         return None
 
-    def draw_empty_tile(self, painter: "QPainter"):
+    def draw_empty_tile(self):
         rect = QRect(self.geometry().x() - self.tile_size,
                      self.geometry().y() - self.tile_size,
-                     self.geometry().width() + 2 * self.tile_size,
-                     self.geometry().height() + 2 * self.tile_size)
+                     self.geometry().right() + self.tile_size,
+                     self.geometry().bottom() + self.tile_size)
         tile = self.drawn_tiles[0]
         visited = set()
         visited.add(tile)
@@ -268,8 +262,8 @@ class MapWidget(QWidget):
             if not rect.contains(QPoint(tile.map_x, tile.map_y)):
                 continue
             if tile not in self.drawn_tiles:
-                self.draw_tile(painter, tile, tile.map_x, tile.map_y)
-                self.add_tile(tile, tile.map_x, tile.map_y)
+                self.draw_tile(tile)
+                self.add_tile(tile)
             for x in range(-1, 2):
                 for y in range(-1, 2):
                     if x == 0 and y == 0:
@@ -280,28 +274,3 @@ class MapWidget(QWidget):
                     if n_tile not in visited:
                         queue.append(n_tile)
                         visited.add(n_tile)
-
-
-class Worker(QRunnable):
-    def __init__(self, cache: "osm.Cache",
-                 painter: "QPainter",
-                 tile: "osm.Tile",
-                 target: QRect,
-                 source: QRect):
-        super().__init__()
-        self.tile = tile
-        self.cache = cache
-        self.painter = painter
-        self.target = target
-        self.source = source
-        self.signal = Signal()
-
-    @pyqtSlot()
-    def run(self):
-        self.cache.get_tile(self.tile)
-        self.signal.finish.emit(self.painter, self.tile, self.target, self.source)
-        self.setAutoDelete(True)
-
-
-class Signal(QObject):
-    finish = pyqtSignal(QPainter, osm.Tile, QRect, QRect)
