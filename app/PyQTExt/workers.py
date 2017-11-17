@@ -1,16 +1,16 @@
 from PyQt5.QtCore import QRunnable, pyqtSlot, pyqtSignal, QObject
-import app.PyQTExt.pixmapItems
+from app.PyQTExt.pixmapItems import *
 import app.openStreetMap as osm
 
 
 class TileWorker(QRunnable):
     def __init__(self,
                  cache: "osm.Cache",
-                 tile: "app.PyQTExt.pixmapItems.QTile"):
+                 tile: "QTile"):
         super().__init__()
         self.tile = tile
         self.cache = cache
-        self.signal = TileSignal()
+        self.signal = Signal()
 
     @pyqtSlot()
     def run(self):
@@ -19,5 +19,10 @@ class TileWorker(QRunnable):
         self.setAutoDelete(True)
 
 
-class TileSignal(QObject):
+class TransportWorker(QRunnable):
+    def __init__(self, transport: "QTransport"):
+        super().__init__()
+
+
+class Signal(QObject):
     finish = pyqtSignal(object)

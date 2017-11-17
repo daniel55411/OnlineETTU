@@ -1,6 +1,6 @@
 import app.openStreetMap as osm
 from PyQt5.QtWidgets import QGraphicsPixmapItem
-import app.ettu as ettu
+from app.ettu import Transport, TransportType
 from PyQt5.QtCore import QPointF
 from PyQt5.QtGui import QPainter, QPixmap, QColor, QBrush
 
@@ -24,14 +24,19 @@ class QTile(osm.Tile, AbstractPixmapItem):
         AbstractPixmapItem.__init__(self, map_x, map_y, parent)
 
 
-class QTransport(ettu.Transport, AbstractPixmapItem):
+class QTransport(Transport, AbstractPixmapItem):
     transport_type_color = {
-        ettu.TransportType.TRAM: QColor(255, 0, 0),
-        ettu.TransportType.TROLLEYBUS: QColor(0, 0, 255)
+        TransportType.TRAM: QColor(255, 0, 0),
+        TransportType.TROLLEYBUS: QColor(0, 0, 255)
     }
 
-    def __init__(self, transport_id, route_id, latitude, longitude, transport_type, map_x=0, map_y=0, parent=None):
-        ettu.Transport.__init__(self, transport_id, route_id, latitude, longitude, transport_type)
+    def __init__(self, transport: "Transport", map_x=0, map_y=0, parent=None):
+        Transport.__init__(self,
+                           transport.transport_id,
+                           transport.route_id,
+                           transport.latitude,
+                           transport.longitude,
+                           transport.transport_type)
         AbstractPixmapItem.__init__(self, map_x, map_y, parent)
         painter = QPainter(self)
         painter.setBrush(self.transport_type_color[self.transport_type])
