@@ -2,7 +2,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QCheckBox,
                              QDockWidget, QVBoxLayout, QGridLayout,
                              QLabel, QPushButton, QHBoxLayout,
                              QGraphicsPixmapItem, QGraphicsView,
-                             QGraphicsScene)
+                             QGraphicsScene, QFrame)
 
 from PyQt5.QtCore import (Qt, QRect, QPoint, QRectF,
                           QThread, QObject, pyqtSignal,
@@ -10,9 +10,6 @@ from PyQt5.QtCore import (Qt, QRect, QPoint, QRectF,
                           QTimer)
 from PyQt5.QtGui import QPainter, QPixmap, QColor, QBrush
 from app import ettu, openStreetMap as osm
-from collections import deque
-from app.PyQTExt.pixmapItems import *
-from app.PyQTExt.workers import *
 from app.PyQTExt.painters import *
 
 
@@ -30,7 +27,7 @@ class MainWindow(QMainWindow):
         self.button2 = QPushButton('+')
         self.button2.clicked.connect(self.inc_zoom)
         self.button3 = QPushButton('Update')
-        self.button3.clicked.connect(self.map.refresh)
+        self.button3.clicked.connect(self.map.update)
         layout = QVBoxLayout(widget)
         layout.addWidget(self.button1)
         layout.addWidget(self.button2)
@@ -39,17 +36,19 @@ class MainWindow(QMainWindow):
         widget.setLayout(layout)
         self.setCentralWidget(widget)
 
-        # self.setCentralWidget(self.map)
-
     def inc_zoom(self):
-        if self.map.zoom < 18:
-            self.map.zoom += 1
-            self.map.refresh()
+        if self.map.tile_painter.zoom < 18:
+            self.map.tile_painter.zoom += 1
+            self.map.tile_painter.set_map_rect(self.geometry())
+            self.map.tile_painter.download()
+            self.map.update()
 
     def dec_zoom(self):
-        if self.map.zoom > 0:
-            self.map.zoom -= 1
-            self.map.refresh()
+        if self.map.tile_painter.zoom > 0:
+            self.map.tile_painter.zoom -= 1
+            self.map.tile_painter.set_map_rect(self.geometry())
+            self.map.tile_painter.download()
+            self.map.update()
 
     def createDockWidget(self):
         self.docked = QDockWidget("Dockable", self)
@@ -87,62 +86,38 @@ class ChooseRoutesWidget(QWidget):
         self.setLayout(self.layout)
 
 
-class MapWidget(QGraphicsView):
-    transport_type_color = {
-        ettu.TransportType.TRAM: QColor(255, 0, 0),
-        ettu.TransportType.TROLLEYBUS: QColor(0, 0, 255)
-    }
-
+class MapWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.ettu = ettu.Receiver()
-        self.cache = osm.Cache()
-        self.redraw_flag = False
-        self.chosen_trams = list(self.ettu.get_trams())
-        self.chosen_trolleybuses = list(self.ettu.get_trolleybuses())
+        self.osm = osm.Receiver()
+        self.thread_pool = QThreadPool()
+
+        self.tile_painter = TilePainter(self.osm, self.geometry())
+        self.tile_painter.osm.connect_update_rect(self.update_map)
+        self.transport_painter = TransportPainter()
+
+        # self.chosen_trams = list(self.ettu.get_trams())
+        # self.chosen_trolleybuses = list(self.ettu.get_trolleybuses())
         self.delta = QPoint(0, 0)
         self.drag_start = None
         self.current_pos = None
-        self.thread_pool = QThreadPool()
-        self.tile_size = 256
-        self.init_scene()
 
-    def init_scene(self):
-        self.scene = QGraphicsScene(self.tile_size,
-                                    self.tile_size,
-                                    self.geometry().width(),
-                                    self.geometry().height(),
-                                    self)
-        self.setScene(self.scene)
-        self.tile_painter = TilePainter(self.scene, self.cache, self.thread_pool)
-        self.transport_painter = TransportPainter(self.scene)
-        self.refresh()
+        self.update()
 
     def init_timer(self):
         self.timer = QTimer()
         self.timer.timeout.connect(self.refresh)
         self.timer.start(100)
 
-    def refresh(self):
-        # self.chosen_trams = list(self.ettu.get_trams())
-        # self.chosen_trolleybuses = list(self.ettu.get_trolleybuses())
-        if self.redraw_flag:
-            rect = QRect(self.geometry().x() - self.tile_size,
-                         self.geometry().y() - self.tile_size,
-                         self.geometry().right() + self.tile_size,
-                         self.geometry().bottom() + self.tile_size)
-            self.tile_painter.redraw(self.delta, self.geometry(), rect)
-            # self.transport_painter.redraw(self.geometry(),
-            #                               self.chosen_trolleybuses + self.chosen_trams,
-            #                               self.get_widget_coordinates)
-        else:
-            self.scene.clear()
-            self.tile_painter.draw(self.geometry())
-            # self.transport_painter.draw(self.geometry(),
-            #                             self.chosen_trolleybuses + self.chosen_trams,
-            #                             self.get_widget_coordinates)
-        self.redraw_flag = False
+    def update_map(self, rect: "QRect"):
         self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter()
+        painter.begin(self)
+        self.tile_painter.draw(painter)
+        painter.end()
 
     def get_widget_coordinates(self, transport: "ettu.Transport"):
         x, y = osm.Translator.deg2num(transport.latitude, transport.longitude, self.tile_painter.zoom)
@@ -179,8 +154,9 @@ class MapWidget(QGraphicsView):
         self.tile_painter.longitude -= coordinates_delta[1]
         self.drag_start = self.current_pos
         self.delta = delta
-        self.redraw_flag = True
-        self.refresh()
+        self.tile_painter.set_map_rect(self.geometry())
+        self.tile_painter.download()
+        self.update()
 
     def find_tile_by_map_coordinates(self, x: int, y: int):
         for tile in self.tile_painter.drawn:

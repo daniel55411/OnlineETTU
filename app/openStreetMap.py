@@ -1,36 +1,67 @@
 import math
-import os.path
-import requests
 from app.exceptions.OSMExceptions import *
 from threading import Lock
+from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkDiskCache
+from PyQt5.QtCore import QUrl, QPoint, pyqtSignal, QRect, Qt, QObject, QStandardPaths
+from PyQt5.QtGui import QImage, QPixmap
+
+TILE_SIZE = 256
 
 
-def map2str(f):
-    def g(*args, **kwargs):
-        # print(args, kwargs)
-        result = args
-        if 'paths' in kwargs:
-            kwargs['paths'] = list(map(str, kwargs['paths']))
-        else:
-            result = []
-            flag = True
-            for arg in args:
-                if isinstance(arg, list) and flag:
-                    result.append(list(map(str, arg)))
-                    flag = False
-                else:
-                    result.append(arg)
-        return f(*result, **kwargs)
-
-    return g
+class Signal(QObject):
+    signal = pyqtSignal(object)
 
 
 class Receiver:
     server_pattern = 'http://a.tile2.opencyclemap.org/transport/{}/{}/{}.png'
 
-    def get_tile_stream(self, zoom, xtile, ytile):
-        r = requests.get(self.server_pattern.format(zoom, xtile, ytile))
-        return r.content
+    def __init__(self):
+        self.__manager = QNetworkAccessManager()
+        self.__cache = Cache()
+        self.__update_signal = Signal()
+        cache = QNetworkDiskCache()
+        cache.setCacheDirectory(
+            QStandardPaths.writableLocation(QStandardPaths.CacheLocation))
+        self.__manager.setCache(cache)
+        self.__url = QUrl()
+        self.__visited = set()
+
+    def connect_handle_data(self, f):
+        self.__manager.finished.connect(f)
+
+    def connect_update_rect(self, f):
+        self.__update_signal.signal.connect(f)
+
+    def download_tile(self, tile: "Tile"):
+        self.__url = QUrl(self.server_pattern.format(tile.zoom, tile.x, tile.y))
+        if (tile.x, tile.y) not in self.__visited:
+            request = QNetworkRequest()
+            request.setUrl(self.__url)
+            request.setAttribute(QNetworkRequest.User, (tile.x, tile.y))
+            self.__manager.get(request)
+            self.__visited.add((tile.x, tile.y))
+
+    def handle_network_data(self, reply):
+        image = QImage()
+        point = reply.request().attribute(QNetworkRequest.User)
+        if not reply.error():
+            if image.load(reply, None):
+                self.__cache.save(point, QPixmap.fromImage(image))
+        reply.deleteLater()
+        self.__update_signal.signal.emit(QRect(*point, TILE_SIZE, TILE_SIZE))
+
+    def get_tile(self, point: tuple):
+        return self.__cache.get_tile_pixmap(point)
+
+    def exist_tile(self, point: tuple):
+        return self.__cache.exist(point)
+
+    def purge_cache(self, rect: "QRect"):
+        self.__cache.purge_unused_tiles(rect)
+        bounds = rect.adjusted(-2, -2, 2, 2)
+        for point in list(self.__visited):
+            if not bounds.contains(QPoint(*point)):
+                self.__visited.remove(point)
 
 
 class Tile:
@@ -48,48 +79,33 @@ class Tile:
     def __hash__(self):
         return 211 * 211 * self.x + 211 * self.y + self.zoom
 
+    def __repr__(self):
+        return "x: {}, y: {}, zoom: {}".format(self.x, self.y, self.zoom)
+
 
 class Cache:
-    absolute_dir = os.path.dirname(os.path.abspath(__file__))
-    cache_dir = os.path.join(absolute_dir, 'cache')
-
     def __init__(self):
-        if not self.exist():
-            os.makedirs(self.cache_dir)
-        self.receiver = Receiver()
-        self.lock = Lock()
+        self.cache = {}
+        self.empty_tile = QPixmap(TILE_SIZE, TILE_SIZE)
+        self.empty_tile.fill(Qt.lightGray)
 
-    @map2str
-    def exist(self, paths=[]):
-        return os.path.exists(os.path.join(self.cache_dir, *paths))
+    def save(self, point: tuple, pixmap: "QPixmap"):
+        self.cache[point] = pixmap
 
-    @map2str
-    def get_name(self, name, paths=[]):
-        return '{}/{}.png'.format(os.path.join(self.cache_dir, *paths), name)
+    def exist(self, point: tuple):
+        return point in self.cache
 
-    @map2str
-    def create_subfolder(self, paths=[]):
-        with self.lock:
-            for index in range(1, len(paths) + 1):
-                if not self.exist(paths[:index]):
-                    os.makedirs(os.path.join(self.cache_dir, *paths[:index]))
-
-    def save(self, stream, tile: "Tile"):
-        paths = [tile.zoom, tile.x]
-        self.create_subfolder(paths=paths)
-        with open(self.get_name(tile.y, paths), 'wb') as file:
-            file.write(stream)
-
-    def get_tile(self, tile: "Tile"):
-        tile_path = self.get_name(tile.y, [tile.zoom, tile.x])
-        if os.path.exists(tile_path):
-            return tile_path
+    def get_tile_pixmap(self, point: tuple):
+        if self.exist(point):
+            return self.cache[point]
         else:
-            self.save(self.receiver.get_tile_stream(tile.zoom, tile.x, tile.y), tile)
-            if os.path.exists(tile_path):
-                return tile_path
+            return self.empty_tile
 
-        raise OSMTileNotSavedException()
+    def purge_unused_tiles(self, rect: "QRect"):
+        bounds = rect.adjusted(-2, -2, 2, 2)
+        for point in list(self.cache.keys()):
+            if not bounds.contains(QPoint(*point)):
+                del self.cache[point]
 
 
 class Translator:
