@@ -33,7 +33,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.addWidget(self.button1)
         layout.addWidget(self.button2)
-        layout.addWidget(self.button3)
+        ## layout.addWidget(self.button3)
         layout.addWidget(self.map)
         widget.setLayout(layout)
         self.setCentralWidget(widget)
@@ -80,12 +80,10 @@ class MapWidget(QWidget):
         self.ettu = ettu.Receiver()
         self.osm = osm.Receiver()
         self.clicked_object = None
-        # self.chosen_trams = list(self.ettu.get_trams())
-        # self.chosen_trolleybuses = list(self.ettu.get_trolleybuses())
         self.delta = QPoint(0, 0)
         self.drag_start = None
-        self.current_pos = None
-        self.tile_painter = TilePainter(self.osm, self.geometry())
+        self.current_pos = None;print(self.geometry());
+	self.tile_painter = TilePainter(self.osm, self.geometry())
         self.tile_painter.osm.connect_update_rect(self.update_map)
         self.transport_painter = TransportPainter(self.ettu)
         self.station_painter = StationPainter(self.ettu)
@@ -198,14 +196,13 @@ class MapWidget(QWidget):
         width = 400
         height = 200
         rect = QRect(self.geometry().right() - width, self.geometry().bottom() - height, width ,height)
-        print(rect.x())
         painter.drawRect(rect)
         painter.setBrush(QTransport.transport_type_color[TransportType.TRAM])
-        painter.drawEllipse(rect.x() + 10, self.y() + 10, 10, 10)
-        painter.drawText(rect.x() + 20, self.y() + 10, 'Трамвай')
-        painter.drawText(rect.x() + 20, self.y() + 30, 'Тролейбус')
-        painter.drawText(rect.x() + 20, self.y() + 60, 'Остановка')
+        painter.drawEllipse(rect.x() + 10, rect.y() + 20, 10, 10)
+        painter.drawText(rect.x() + 25, rect.y() + 25, 'Трамвай')
+        painter.drawText(rect.x() + 25, rect.y() + 45, 'Тролейбус')
+        painter.drawText(rect.x() + 25, rect.y() + 75, 'Остановка')
         painter.setBrush(QTransport.transport_type_color[TransportType.TROLLEYBUS])
-        painter.drawEllipse(rect.x() + 10, self.y() + 30, 10, 10)
+        painter.drawEllipse(rect.x() + 10, rect.y() + 40, 10, 10)
         painter.setBrush(QStation.color)
-        painter.drawEllipse(rect.x() + 10, self.y() + 60, 10, 10)
+        painter.drawEllipse(rect.x() + 10, rect.y() + 70, 10, 10)
