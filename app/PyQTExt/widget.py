@@ -10,7 +10,9 @@ from PyQt5.QtCore import (Qt, QRect, QPoint, QRectF,
                           QTimer)
 from PyQt5.QtGui import QPainter, QPixmap, QColor, QBrush
 from app import ettu, openStreetMap as osm
+from app.PyQTExt.QItems import TransportContextMenu, StationContextMenu
 from app.PyQTExt.painters import *
+from app.ettu import TransportType
 
 
 class MainWindow(QMainWindow):
@@ -23,9 +25,9 @@ class MainWindow(QMainWindow):
     def initUI(self):
         widget = QWidget(self)
         self.button1 = QPushButton('-')
-        self.button1.clicked.connect(self.dec_zoom)
+        self.button1.clicked.connect(self.map.zoom_out)
         self.button2 = QPushButton('+')
-        self.button2.clicked.connect(self.inc_zoom)
+        self.button2.clicked.connect(self.map.zoom_in)
         self.button3 = QPushButton('Update')
         self.button3.clicked.connect(self.map.update)
         layout = QVBoxLayout(widget)
@@ -35,20 +37,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.map)
         widget.setLayout(layout)
         self.setCentralWidget(widget)
-
-    def inc_zoom(self):
-        if self.map.tile_painter.zoom < 18:
-            self.map.tile_painter.zoom += 1
-            self.map.tile_painter.set_map_rect(self.geometry())
-            self.map.tile_painter.download()
-            self.map.update()
-
-    def dec_zoom(self):
-        if self.map.tile_painter.zoom > 0:
-            self.map.tile_painter.zoom -= 1
-            self.map.tile_painter.set_map_rect(self.geometry())
-            self.map.tile_painter.download()
-            self.map.update()
 
     def createDockWidget(self):
         self.docked = QDockWidget("Dockable", self)
@@ -91,43 +79,70 @@ class MapWidget(QWidget):
         super().__init__()
         self.ettu = ettu.Receiver()
         self.osm = osm.Receiver()
-        self.thread_pool = QThreadPool()
-
-        self.tile_painter = TilePainter(self.osm, self.geometry())
-        self.tile_painter.osm.connect_update_rect(self.update_map)
-        self.transport_painter = TransportPainter()
-
+        self.clicked_object = None
         # self.chosen_trams = list(self.ettu.get_trams())
         # self.chosen_trolleybuses = list(self.ettu.get_trolleybuses())
         self.delta = QPoint(0, 0)
         self.drag_start = None
         self.current_pos = None
-
+        self.tile_painter = TilePainter(self.osm, self.geometry())
+        self.tile_painter.osm.connect_update_rect(self.update_map)
+        self.transport_painter = TransportPainter(self.ettu)
+        self.station_painter = StationPainter(self.ettu)
+        self.transport_painter.ettu.connect_update_rect(self.update_map)
         self.update()
+        self.init_timer()
+
+    def zoom_in(self):
+        if self.tile_painter.zoom < 18:
+            self.tile_painter.zoom += 1
+            self.tile_painter.set_map_rect(self.geometry())
+            self.clicked_object = None
+            self.tile_painter.download()
+            self.update()
+
+    def zoom_out(self):
+        if self.tile_painter.zoom > 0:
+            self.tile_painter.zoom -= 1
+            self.tile_painter.set_map_rect(self.geometry())
+            self.clicked_object = None
+            self.tile_painter.download()
+            self.update()
 
     def init_timer(self):
         self.timer = QTimer()
-        self.timer.timeout.connect(self.refresh)
-        self.timer.start(100)
+        self.timer.timeout.connect(self.update_transports)
+        self.timer.start(15000)
 
     def update_map(self, rect: "QRect"):
+        self.update()
+
+    def update_transports(self):
+        self.transport_painter.download()
+        if isinstance(self.clicked_object, TransportContextMenu):
+            self.clicked_object = None
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter()
         painter.begin(self)
         self.tile_painter.draw(painter)
+        self.transport_painter.draw(painter, self.get_widget_coordinates)
+        self.station_painter.draw(painter, self.get_widget_coordinates)
+        if self.clicked_object is not None:
+            self.clicked_object.draw(painter, self.ettu.last_station)
+        self.draw_legend(painter)
         painter.end()
 
-    def get_widget_coordinates(self, transport: "ettu.Transport"):
-        x, y = osm.Translator.deg2num(transport.latitude, transport.longitude, self.tile_painter.zoom)
+    def get_widget_coordinates(self, ettu_obj):
+        x, y = osm.Translator.deg2num(ettu_obj.latitude, ettu_obj.longitude, self.tile_painter.zoom)
         tile = self.find_drawn_tile(x, y)
         if tile is None:
             return
         latitude, longitude = osm.Translator.num2deg(tile.x, tile.y, self.tile_painter.zoom)
-        dy = osm.Translator.get_distance((latitude, longitude), (transport.latitude, longitude))
-        dx = osm.Translator.get_distance((latitude, longitude), (latitude, transport.longitude))
-        resolution = osm.Translator.get_resolution(transport.latitude, self.tile_painter.zoom)
+        dy = osm.Translator.get_distance((latitude, longitude), (ettu_obj.latitude, longitude))
+        dx = osm.Translator.get_distance((latitude, longitude), (latitude, ettu_obj.longitude))
+        resolution = osm.Translator.get_resolution(ettu_obj.latitude, self.tile_painter.zoom)
         map_dy, map_dx = dy / resolution, dx / resolution
         return tile.map_x + map_dx, tile.map_y + map_dy
 
@@ -138,7 +153,20 @@ class MapWidget(QWidget):
         return None
 
     def mousePressEvent(self, event):
+        self.clicked_object = None
         self.drag_start = event.localPos()
+        for ettu_obj in self.ettu.all_transports + self.ettu.all_stations:
+            coord = self.get_widget_coordinates(ettu_obj)
+            if coord is not None:
+                rect = QRectF(*coord, 20, 20)
+                rect.translate(-10, -10)
+                if rect.contains(self.drag_start):
+                    if isinstance(ettu_obj, Transport):
+                        self.clicked_object = TransportContextMenu(ettu_obj, self.drag_start.x(), self.drag_start.y())
+                    else:
+                        self.clicked_object = StationContextMenu(ettu_obj, self.drag_start.x(), self.drag_start.y())
+                        self.ettu.get_arrive_time(ettu_obj.station_id)
+                    self.update()
 
     def mouseMoveEvent(self, event):
         self.current_pos = event.localPos()
@@ -164,3 +192,20 @@ class MapWidget(QWidget):
                                     tile.map_y <= y <= tile.map_y + self.tile_painter.tile_size:
                 return tile
         return None
+
+    def draw_legend(self, painter: "QPainter"):
+        painter.setBrush(QColor(255, 255, 255))
+        width = 400
+        height = 200
+        rect = QRect(self.geometry().right() - width, self.geometry().bottom() - height, width ,height)
+        print(rect.x())
+        painter.drawRect(rect)
+        painter.setBrush(QTransport.transport_type_color[TransportType.TRAM])
+        painter.drawEllipse(rect.x() + 10, self.y() + 10, 10, 10)
+        painter.drawText(rect.x() + 20, self.y() + 10, 'Трамвай')
+        painter.drawText(rect.x() + 20, self.y() + 30, 'Тролейбус')
+        painter.drawText(rect.x() + 20, self.y() + 60, 'Остановка')
+        painter.setBrush(QTransport.transport_type_color[TransportType.TROLLEYBUS])
+        painter.drawEllipse(rect.x() + 10, self.y() + 30, 10, 10)
+        painter.setBrush(QStation.color)
+        painter.drawEllipse(rect.x() + 10, self.y() + 60, 10, 10)

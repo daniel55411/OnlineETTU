@@ -1,6 +1,8 @@
-from app.PyQTExt.QItems import QTile, QTransport
+from PyQt5.QtGui import QPainter
+
+from app.PyQTExt.QItems import QTile, QTransport, QStation
 from PyQt5.QtCore import QPointF, QRect, QPoint
-from app.ettu import Transport
+from app.ettu import Transport, Receiver
 from app.openStreetMap import Tile, Translator
 
 TILE_SIZE = 256
@@ -35,7 +37,8 @@ class TilePainter(IPainter):
     def draw(self, painter: "QPainter"):
         for x in range(self.map_rect.left(), self.map_rect.right()):
             for y in range(self.map_rect.top(), self.map_rect.bottom()):
-                tile = QTile(Tile(x, y, self.zoom), (x - self.map_rect.left()) * TILE_SIZE, (y - self.map_rect.top()) * TILE_SIZE)
+                tile = QTile(Tile(x, y, self.zoom), (x - self.map_rect.left()) * TILE_SIZE,
+                             (y - self.map_rect.top()) * TILE_SIZE)
                 self.draw_tile(painter, tile)
 
     def set_map_rect(self, rect: "QRect"):
@@ -47,9 +50,11 @@ class TilePainter(IPainter):
     def handle_network_data(self, reply):
         self.osm.handle_network_data(reply)
         self.osm.purge_cache(self.map_rect)
+        self.drawn = [tile for tile in self.drawn if self.osm.exist_tile((tile.x, tile.y))]
         self.download()
 
     def download(self):
+        self.drawn.clear()
         for x in range(self.map_rect.left(), self.map_rect.right()):
             for y in range(self.map_rect.top(), self.map_rect.bottom()):
                 tile = Tile(x, y, self.zoom)
@@ -59,26 +64,37 @@ class TilePainter(IPainter):
 
 
 class TransportPainter(IPainter):
-    def __init__(self):
+    def __init__(self, ettu: "Receiver"):
         super().__init__()
+        self.ettu = ettu
+        self.download()
 
-    def redraw(self, rect: "QRect", collection: list, get_coordinates_function):
-        self._draw(rect, collection, get_coordinates_function)
-
-    def draw_one(self, transport: "QTransport"):
-        if transport not in self.drawn:
-            self.scene.addItem(transport)
-            self.drawn.append(transport)
-
-    def draw(self, rect: "QRect", collection: list, get_coordinates_function):
-        self.drawn.clear()
-        self._draw(rect, collection, get_coordinates_function)
-
-    def _draw(self, rect: "QRect", collection: list, get_coordinates_function):
-        for tr in collection:
+    def draw(self, painter: "QPainter", get_coordinates_function):
+        for tr in self.ettu.all_transports:
             coordinates = get_coordinates_function(tr)
-            if coordinates is not None and rect.contains(QPoint(*coordinates)):
-                self.draw_transport(*coordinates, tr)
+            if coordinates is not None:
+                QTransport(tr, *coordinates).draw(painter)
 
-    def draw_transport(self, coordinates: tuple, transport: "Transport"):
-        self.draw_one(QTransport(transport, *coordinates))
+    def download(self):
+        self.ettu.all_transports.clear()
+        self.ettu.get_trams()
+        self.ettu.get_trolleybuses()
+
+
+class StationPainter(IPainter):
+    def __init__(self, ettu: "Receiver"):
+        super().__init__()
+        self.ettu = ettu
+        self.download()
+
+    def draw(self, painter: "QPainter", get_coordinates_function):
+        for station in self.ettu.all_stations:
+            coordinates = get_coordinates_function(station)
+            if coordinates is not None:
+                QStation(station, *coordinates).draw(painter)
+
+    def download(self):
+        self.ettu.all_stations.clear()
+        self.ettu.get_tram_stations()
+        self.ettu.get_troll_stations()
+

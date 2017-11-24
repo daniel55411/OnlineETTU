@@ -14,15 +14,13 @@ class Signal(QObject):
 
 class Receiver:
     server_pattern = 'http://a.tile2.opencyclemap.org/transport/{}/{}/{}.png'
+    # server_pattern = 'http://tile-a.openstreetmap.fr/{}/{}/{}.png'
+    # server_pattern = 'http://a.tile.openstreetmap.org/{}/{}/{}.png'
 
     def __init__(self):
         self.__manager = QNetworkAccessManager()
         self.__cache = Cache()
         self.__update_signal = Signal()
-        cache = QNetworkDiskCache()
-        cache.setCacheDirectory(
-            QStandardPaths.writableLocation(QStandardPaths.CacheLocation))
-        self.__manager.setCache(cache)
         self.__url = QUrl()
         self.__visited = set()
 
@@ -40,6 +38,9 @@ class Receiver:
             request.setAttribute(QNetworkRequest.User, (tile.x, tile.y))
             self.__manager.get(request)
             self.__visited.add((tile.x, tile.y))
+
+    def emit_update(self):
+        self.__update_signal.signal.emit()
 
     def handle_network_data(self, reply):
         image = QImage()
