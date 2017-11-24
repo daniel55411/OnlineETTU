@@ -82,7 +82,7 @@ class MapWidget(QWidget):
         self.clicked_object = None
         self.delta = QPoint(0, 0)
         self.drag_start = None
-        self.current_pos = None;print(self.geometry());
+        self.current_pos = None
 	self.tile_painter = TilePainter(self.osm, self.geometry())
         self.tile_painter.osm.connect_update_rect(self.update_map)
         self.transport_painter = TransportPainter(self.ettu)
